@@ -1,0 +1,15 @@
+tests:
+  - host: "127.0.0.1"
+    port: 5672
+    user: "sensu"
+    pass: "cisco123"
+    queue: "testqueue1"
+    msgcount: 50
+    msginterval: 100000
+  - host: "127.0.0.1"
+    port: 5672
+    user: "sensu"
+    pass: "cisco123"
+    queue: "testqueue2"
+    msgcount: 100
+    msginterval: 50000

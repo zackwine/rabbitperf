@@ -1,51 +1,84 @@
 package main
 
 import (
-  "log"
-  "time"
+	"fmt"
+	"time"
 )
 
-const (
-    maxConnectsPerHost = 25
-    requestTimeout = 5
-)
-
-type LogPerf struct {
-  count int
-  loggen *LogGenerator
+type RabbitPerf struct {
+	conf     RabbitPerfCfg
+	receiver *AmqReceiver
+	sender   *AmqSender
 }
 
+func runConfigFile(conffile string) error {
+	configs, err := NewRabbitPerfCfg(conffile)
 
-func NewLogPerf(count int) (*LogPerf) {
-  l := &LogPerf{}
-  l.count = count
-  l.loggen = NewLogGenerator("logperf")
-  l.loggen.SetMessagePaddingSizeBytes(300)
-  //l.httpoutput = NewHttpOutputPool( maxConnectsPerHost, requestTimeout)
-  return l
+	if err != nil {
+		logger.Printf("error: %v", err)
+		return err
+	}
+	//logger.Printf("Parsed configs: %v", configs)
+
+	done := make(chan *RabbitPerf)
+
+	for index, config := range configs.Configs {
+		logger.Println("Running test", index, config)
+		rabbitperf := NewRabbitPerf(config)
+		if err != nil {
+			logger.Printf("Error creating rabbitmqperf %v", err)
+			return err
+		}
+		go rabbitperf.run(done)
+	}
+
+	for index, _ := range configs.Configs {
+		perf := <-done
+		logger.Println("Finished test", index, perf.conf)
+	}
+
+	return nil
 }
 
-func timeTrack(start time.Time, name string) {
-    elapsed := time.Since(start)
-    log.Printf("%s took %s", name, elapsed)
+func NewRabbitPerf(conf RabbitPerfCfg) *RabbitPerf {
+	r := &RabbitPerf{
+		conf: conf,
+	}
+	return r
 }
 
-func (l *LogPerf) sendLog() (error) {
+func (r *RabbitPerf) run(done chan *RabbitPerf) error {
+	var err error
 
-  msg, err := l.loggen.GetMessage()
-  if err != nil {
-    logger.Printf("error: %v", err)
-    return err
-  }
-  logger.Printf("msg: %v", msg)
-  defer timeTrack(time.Now(), "SendMessage")
-  //l.httpoutput.SendMessage(url, "POST", "json=" + msg)
-  return nil
-}
+	defer func() {
+		done <- r
+	}()
 
-func (l *LogPerf) SendLogs() {
-  for i := 0; i < l.count; i++ {
-    l.sendLog()
-    //time.Sleep(4 * time.Second)
-  }
+	r.receiver, err = NewAmqReceiver(r.conf.Host, r.conf.Port, r.conf.User,
+		r.conf.Pass, r.conf.Queue)
+	if err != nil {
+		logger.Printf("Failed create receiver: %s", err)
+		return err
+	}
+	defer r.receiver.Close()
+	r.receiver.Receive()
+
+	r.sender, err = NewAmqSender(r.conf.Host, r.conf.Port, r.conf.User,
+		r.conf.Pass, r.conf.Queue)
+	if err != nil {
+		logger.Printf("Failed create sender: %s", err)
+		return err
+	}
+	defer r.sender.Close()
+
+	err = r.sender.SendBatch(r.conf.MsgCount, time.Duration(r.conf.MsgInterval)*time.Microsecond)
+	if err != nil {
+		logger.Printf("Failed send: %s", err)
+		panic(fmt.Sprintf("Failed send: %s", err))
+	}
+
+	r.receiver.Wait(r.conf.MsgCount, 2*time.Second)
+	logger.Printf("ReceivedCount: %d, Discontinuities: %d, ErrorCount: %d", r.receiver.ReceivedCount, r.receiver.Discontinuities, r.receiver.ErrorCount)
+
+	return err
 }
