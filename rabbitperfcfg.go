@@ -12,6 +12,7 @@ type RabbitPerfCfg struct {
 	User        string
 	Pass        string
 	Queue       string
+	Vhost       string
 	MsgCount    int
 	MsgInterval int
 }

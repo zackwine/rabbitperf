@@ -9,18 +9,15 @@ import (
 )
 
 type AmqReceiver struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
+	Uri             *amqp.URI
 	QueueName       string
 	connection      *amqp.Connection
 	channel         *amqp.Channel
-	queue           amqp.Queue
 	lastSeqNum      int
 	ReceivedCount   int
 	Discontinuities int
 	ErrorCount      int
+	receiving       bool
 }
 
 type AmqMessage struct {
@@ -29,50 +26,66 @@ type AmqMessage struct {
 	Timestamp string
 }
 
-func NewAmqReceiver(host string, port int, user string, pass string, queue string) (*AmqReceiver, error) {
-	var err error
-	a := &AmqReceiver{
-		Host:      host,
-		Port:      port,
-		User:      user,
-		Password:  pass,
-		QueueName: queue,
+func NewAmqReceiver(host string, port int, user string, pass string, queue string, vhost string) (*AmqReceiver, error) {
+
+	uri := &amqp.URI{
+		Scheme:   "amqp",
+		Host:     host,
+		Port:     port,
+		Username: user,
+		Password: pass,
+		Vhost:    vhost,
 	}
 
-	defer func() {
+	connection, channel, err := AmqpSetup(uri.String(), queue)
+	if err != nil {
+		logger.Printf("Failed to setup amqp connection.")
+		return nil, err
+	}
+
+	a := &AmqReceiver{
+		Uri:        uri,
+		QueueName:  queue,
+		connection: connection,
+		channel:    channel,
+		receiving:  false,
+	}
+
+	a.registerReconnect()
+
+	return a, nil
+}
+
+func (a *AmqReceiver) reconnect() {
+	var err error
+	backofftime := 1 * time.Second
+
+	a.connection, a.channel, err = AmqpSetup(a.Uri.String(), a.QueueName)
+	for err != nil {
+		logger.Printf("Failed to setup amqp connection.")
+		time.Sleep(backofftime)
+		backofftime = backofftime * 2
+		a.connection, a.channel, err = AmqpSetup(a.Uri.String(), a.QueueName)
+	}
+
+	a.registerReconnect()
+
+	if a.receiving {
+		a.Receive()
+	}
+}
+
+func (a *AmqReceiver) registerReconnect() {
+	notifyClose := make(chan *amqp.Error)
+	a.channel.NotifyClose(notifyClose)
+
+	go func() {
+		err := <-notifyClose
 		if err != nil {
-			a.Close()
+			logger.Printf("Connection closed %v", err)
+			a.reconnect()
 		}
 	}()
-
-	url := "amqp://" + user + ":" + pass + "@" + host + ":" + strconv.Itoa(port) + "/"
-	//"amqp://sensu:cisco123@127.0.0.1:5672/"
-	a.connection, err = amqp.Dial(url)
-	if err != nil {
-		logger.Printf("Failed to connect to RabbitMQ")
-		return nil, err
-	}
-
-	a.channel, err = a.connection.Channel()
-	if err != nil {
-		logger.Printf("Failed to open a channel")
-		return nil, err
-	}
-
-	a.queue, err = a.channel.QueueDeclare(
-		queue, // name
-		false, // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		logger.Printf("Failed to declare a queue")
-		return nil, err
-	}
-
-	return a, err
 }
 
 func (a *AmqReceiver) Close() {
@@ -110,14 +123,20 @@ func (a *AmqReceiver) parseMessage(message []byte) {
 
 func (a *AmqReceiver) Receive() error {
 
+	// Indicate we only want 1 message to acknowledge at a time.
+	if err := a.channel.Qos(1, 0, false); err != nil {
+		log.Printf("Failed to set Qos on channel.")
+		return err
+	}
+
 	msgs, err := a.channel.Consume(
-		a.queue.Name, // queue
-		"",           // consumer
-		true,         // auto-ack
-		false,        // exclusive
-		false,        // no-local
-		false,        // no-wait
-		nil,          // args
+		a.QueueName, // queue
+		"",          // consumer
+		true,        // auto-ack
+		false,       // exclusive
+		false,       // no-local
+		false,       // no-wait
+		nil,         // args
 	)
 	if err != nil {
 		log.Printf("Failed to get consumer channel.")
@@ -125,6 +144,10 @@ func (a *AmqReceiver) Receive() error {
 	}
 
 	go func() {
+		a.receiving = true
+		defer func() {
+			a.receiving = false
+		}()
 		for d := range msgs {
 			//log.Printf("Received a message: %s", d.Body)
 			a.parseMessage(d.Body)

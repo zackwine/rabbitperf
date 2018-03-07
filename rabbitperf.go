@@ -55,7 +55,7 @@ func (r *RabbitPerf) run(done chan *RabbitPerf) error {
 	}()
 
 	r.receiver, err = NewAmqReceiver(r.conf.Host, r.conf.Port, r.conf.User,
-		r.conf.Pass, r.conf.Queue)
+		r.conf.Pass, r.conf.Queue, r.conf.Vhost)
 	if err != nil {
 		logger.Printf("Failed create receiver: %s", err)
 		return err
@@ -64,7 +64,7 @@ func (r *RabbitPerf) run(done chan *RabbitPerf) error {
 	r.receiver.Receive()
 
 	r.sender, err = NewAmqSender(r.conf.Host, r.conf.Port, r.conf.User,
-		r.conf.Pass, r.conf.Queue)
+		r.conf.Pass, r.conf.Queue, r.conf.Vhost)
 	if err != nil {
 		logger.Printf("Failed create sender: %s", err)
 		return err

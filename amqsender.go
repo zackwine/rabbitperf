@@ -2,59 +2,89 @@ package main
 
 import (
 	"github.com/streadway/amqp"
-	"strconv"
 	"time"
 )
 
 type AmqSender struct {
-	Host       string
-	Port       int
-	User       string
-	Password   string
+	Uri        *amqp.URI
 	QueueName  string
 	connection *amqp.Connection
 	channel    *amqp.Channel
-	queue      amqp.Queue
 }
 
-func NewAmqSender(host string, port int, user string, pass string, queue string) (*AmqSender, error) {
-	var err error
+func NewAmqSender(host string, port int, user string, pass string, queue string, vhost string) (*AmqSender, error) {
+
+	uri := &amqp.URI{
+		Scheme:   "amqp",
+		Host:     host,
+		Port:     port,
+		Username: user,
+		Password: pass,
+		Vhost:    vhost,
+	}
+
+	connection, channel, err := AmqpSetup(uri.String(), queue)
+	if err != nil {
+		logger.Printf("Failed to setup amqp connection.")
+		return nil, err
+	}
+
 	a := &AmqSender{
-		Host:      host,
-		Port:      port,
-		User:      user,
-		Password:  pass,
-		QueueName: queue,
+		Uri:        uri,
+		QueueName:  queue,
+		connection: connection,
+		channel:    channel,
 	}
 
-	url := "amqp://" + user + ":" + pass + "@" + host + ":" + strconv.Itoa(port) + "/"
-	//"amqp://sensu:cisco123@127.0.0.1:5672/"
-	a.connection, err = amqp.Dial(url)
-	if err != nil {
-		logger.Printf("Failed to connect to RabbitMQ")
-		return nil, err
+	a.registerReconnect()
+
+	return a, nil
+}
+
+func (a *AmqSender) reconnect() {
+	var err error
+	backofftime := 1 * time.Second
+
+	a.connection, a.channel, err = AmqpSetup(a.Uri.String(), a.QueueName)
+	for err != nil {
+		logger.Printf("Failed to setup amqp connection.")
+		time.Sleep(backofftime)
+		backofftime = backofftime * 2
+		a.connection, a.channel, err = AmqpSetup(a.Uri.String(), a.QueueName)
 	}
 
-	a.channel, err = a.connection.Channel()
-	if err != nil {
-		logger.Printf("Failed to open a channel")
-		return nil, err
-	}
+	a.registerReconnect()
+}
 
-	a.queue, err = a.channel.QueueDeclare(
-		queue, // name
-		false, // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		logger.Printf("Failed to declare a queue")
-		return nil, err
-	}
+func (a *AmqSender) registerReconnect() {
+	notifyClose := make(chan *amqp.Error)
+	a.channel.NotifyClose(notifyClose)
 
-	return a, err
+	go func() {
+		err := <-notifyClose
+		if err != nil {
+			logger.Printf("Connection closed %v", err)
+			a.reconnect()
+		}
+	}()
+
+	ack := make(chan uint64)
+	nack := make(chan uint64)
+	a.channel.NotifyConfirm(ack, nack)
+	go func() {
+		confirm := <-ack
+		logger.Printf("Received ack %v", confirm)
+	}()
+	go func() {
+		confirm := <-nack
+		logger.Printf("Received nack %v", confirm)
+	}()
+
+	notifyFlow := make(chan bool)
+	go func() {
+		flow := <-notifyFlow
+		logger.Printf("Received ack %b", flow)
+	}()
 }
 
 func (a *AmqSender) Close() {
@@ -68,10 +98,10 @@ func (a *AmqSender) Close() {
 
 func (a *AmqSender) Send(message string) error {
 	err := a.channel.Publish(
-		"",           // exchange
-		a.queue.Name, // routing key
-		false,        // mandatory
-		false,        // immediate
+		"",          // exchange
+		a.QueueName, // routing key
+		false,       // mandatory
+		false,       // immediate
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
 			ContentType:  "text/plain",
@@ -95,8 +125,10 @@ func (a *AmqSender) SendBatch(count int, period time.Duration) error {
 			return err
 		}
 		err = a.Send(msg)
-		if err != nil {
-			return err
+		for err != nil {
+			logger.Printf("(Retry) Failed to send with error %v", err)
+			time.Sleep(time.Duration(period))
+			err = a.Send(msg)
 		}
 		if period > 0 {
 			time.Sleep(time.Duration(period))
