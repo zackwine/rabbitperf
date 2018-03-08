@@ -59,6 +59,7 @@ func NewAmqReceiver(host string, port int, user string, pass string, queue strin
 func (a *AmqReceiver) reconnect() {
 	var err error
 	backofftime := 1 * time.Second
+	logger.Printf("AmqReceiver -> reconnect()")
 
 	a.connection, a.channel, err = AmqpSetup(a.Uri.String(), a.QueueName)
 	for err != nil {
@@ -70,7 +71,8 @@ func (a *AmqReceiver) reconnect() {
 
 	a.registerReconnect()
 
-	if a.receiving {
+	if a.receiving == true {
+		logger.Printf("Restart receiving")
 		a.Receive()
 	}
 }
@@ -123,6 +125,8 @@ func (a *AmqReceiver) parseMessage(message []byte) {
 
 func (a *AmqReceiver) Receive() error {
 
+	a.receiving = true
+
 	// Indicate we only want 1 message to acknowledge at a time.
 	if err := a.channel.Qos(1, 0, false); err != nil {
 		log.Printf("Failed to set Qos on channel.")
@@ -144,10 +148,6 @@ func (a *AmqReceiver) Receive() error {
 	}
 
 	go func() {
-		a.receiving = true
-		defer func() {
-			a.receiving = false
-		}()
 		for d := range msgs {
 			//log.Printf("Received a message: %s", d.Body)
 			a.parseMessage(d.Body)

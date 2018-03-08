@@ -45,6 +45,7 @@ func (a *AmqSender) reconnect() {
 	var err error
 	backofftime := 1 * time.Second
 
+	logger.Printf("AmqSender -> reconnect()")
 	a.connection, a.channel, err = AmqpSetup(a.Uri.String(), a.QueueName)
 	for err != nil {
 		logger.Printf("Failed to setup amqp connection.")
@@ -59,31 +60,31 @@ func (a *AmqSender) reconnect() {
 func (a *AmqSender) registerReconnect() {
 	notifyClose := make(chan *amqp.Error)
 	a.channel.NotifyClose(notifyClose)
-
 	go func() {
 		err := <-notifyClose
 		if err != nil {
 			logger.Printf("Connection closed %v", err)
 			a.reconnect()
 		}
-	}()
-
-	ack := make(chan uint64)
-	nack := make(chan uint64)
-	a.channel.NotifyConfirm(ack, nack)
-	go func() {
-		confirm := <-ack
-		logger.Printf("Received ack %v", confirm)
-	}()
-	go func() {
-		confirm := <-nack
-		logger.Printf("Received nack %v", confirm)
+		//logger.Printf("Bye notifyClose")
 	}()
 
 	notifyFlow := make(chan bool)
+	a.channel.NotifyFlow(notifyFlow)
 	go func() {
-		flow := <-notifyFlow
-		logger.Printf("Received ack %b", flow)
+		for flow := range notifyFlow {
+			logger.Printf("Received flow %b", flow)
+		}
+		//logger.Printf("Bye notifyFlow")
+	}()
+
+	notifyReturn := make(chan amqp.Return)
+	a.channel.NotifyReturn(notifyReturn)
+	go func() {
+		for returnedMsg := range notifyReturn {
+			logger.Printf("Received notifyReturn %v", returnedMsg.Body)
+		}
+		//logger.Printf("Bye notifyReturn")
 	}()
 }
 

@@ -12,6 +12,8 @@ type RabbitPerf struct {
 }
 
 func runConfigFile(conffile string) error {
+	var rabbitperfs []*RabbitPerf
+
 	configs, err := NewRabbitPerfCfg(conffile)
 
 	if err != nil {
@@ -29,12 +31,17 @@ func runConfigFile(conffile string) error {
 			logger.Printf("Error creating rabbitmqperf %v", err)
 			return err
 		}
+		rabbitperfs = append(rabbitperfs, rabbitperf)
 		go rabbitperf.run(done)
 	}
 
 	for index, _ := range configs.Configs {
 		perf := <-done
 		logger.Println("Finished test", index, perf.conf)
+	}
+
+	for _, rp := range rabbitperfs {
+		logger.Println("Results:", rp.getResults())
 	}
 
 	return nil
@@ -81,4 +88,8 @@ func (r *RabbitPerf) run(done chan *RabbitPerf) error {
 	logger.Printf("ReceivedCount: %d, Discontinuities: %d, ErrorCount: %d", r.receiver.ReceivedCount, r.receiver.Discontinuities, r.receiver.ErrorCount)
 
 	return err
+}
+
+func (r *RabbitPerf) getResults() string {
+	return fmt.Sprintf("{ \"ReceivedCount\": \"%d\", \"SentCount\": \"%d\", \"Discontinuities\": \"%d\", \"ErrorCount\": \"%d\" }", r.receiver.ReceivedCount, r.conf.MsgCount, r.receiver.Discontinuities, r.receiver.ErrorCount)
 }
