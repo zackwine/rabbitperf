@@ -30,7 +30,7 @@ func NewRabbitPerfCfg(filename string) (*RabbitPerfCfgs, error) {
 	err = yaml.Unmarshal(source, t)
 	if err != nil {
 		fmt.Printf("error: %v", err)
-		panic(err)
+		return nil, err
 	}
 	return t, err
 }
